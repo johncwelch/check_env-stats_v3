@@ -20,12 +20,13 @@
 # v0.5 Now implements "-p" perfmon option for performance data
 # v1.0 Code cleanup and a few minor bugfixes
 # v1.1 first additions of SNMPv3 support.
+# v1.2 additions of Juniper support
 
 import os
 import sys
 from optparse import OptionParser
 
-scriptversion = "1.0"
+scriptversion = "1.2"
 
 errors = {
     "OK": 0,
@@ -41,7 +42,7 @@ def set_common_options(snmpver):
     #this way we know which common_options we're setting
     global common_options
     if snmpver == "2":
-        common_options = "snmpwalk -OvQ -v 1"
+        common_options = "snmpwalk -OvQ -v 2c"
         #print(snmpwalkstring)
     elif snmpver == "3":
         common_options = "snmpwalk -OvQ -v 3"
@@ -283,11 +284,131 @@ def check_hp(hostname,community,mode,verbose,version,secLevel,authProt,authPass,
     fail("HP functions not yet implemented.")
 
 # Function for Juniper equipment
+#2 = PSU
+#4 = FAN 
+# use JNXMIBS tables? 
+#cpu load avail
 def check_juniper(hostname,community,mode,verbose,version,secLevel,authProt,authPass,encryptProt,encryptPass,userName):
-    fail("Juniper functions not yet implemented.")
+     #if check on version to build command
+    if version == "2":
+        command = common_options + " -c " + community + " " + hostname + " "
+    elif version == "3":
+        #gonna be a lot of checking in here. SO MANY IF STATMENTS
+        #Seclevel checking
+        if secLevel == None or secLevel == "":
+            fail("You must have a security level for snmpv3. Valid levels are: noAuthNoPriv, authNoPriv, authPriv")
+            sys.exit()
+        elif secLevel == "noAuthNoPriv":
+            #for this level, you HAVE to still provide a username
+            if userName == None or userName == "":
+                fail("When using a security level of noAuthNoPriv, you must provide a username")
+                sys.exit()
+            
+            #username provided
+            command = common_options + " -l " + secLevel + " -u " + userName + " " + hostname + " "
+            
+        elif secLevel == "authNoPriv":
+            #for this level, we need a username, an authentication protocol and an authentication passphrase
+            if (userName == None or userName == "") or (authProt == None or authProt == "") or (authPass == None or authPass == ""):
+               fail("When using a security level of authNoPriv, you must provide a username, an authentication protocol and an authentication passphrase")
+               sys.exit()
+            
+            #username/authProt/authPass provided. Now we check for valid authProt (MD5 or SHA)
+            if authProt != "MD5" and authProt != "SHA":
+                fail("The authentication protocol must be MD5 or SHA")
+                sys.exit()
+               
+            #auth protocol is valid, build the command
+            command = common_options + " -l " + secLevel + " -u " + userName + " -a " + authProt + " -A " + authPass + " " + hostname + " "
+          
+        elif secLevel == "authPriv":
+            if (userName == None or userName == "") or (authProt == None or authProt == "") or (authPass == None or authPass == ""):
+               fail("When using a security level of authPriv, you must provide a username, an authentication protocol and an authentication passphrase")
+               sys.exit
+            if (encryptProt == None or encryptProt == "") or (encryptPass == None or encryptPass == ""):
+               fail("When using a security level of authPriv, you must provide an encryption protocol and an encryption passphrase")
+               sys.exit
+            
+            #check that authProt is valid
+            if authProt != "MD5" and authProt != "SHA":
+                fail("The authentication protocol must be MD5 or SHA")
+                sys.exit()
+            
+            #check that encryptProt is valid
+            if encryptProt != "DES" and encryptProt != "AES":
+                fail("The authentication protocol must be AES or DES")
+                sys.exit()
+            
+            #valid encrypt protocol, build the command
+            command = common_options + " -l " + secLevel + " -u " + userName + " -a " + authProt + " -A " + authPass + " " + " -x " + encryptProt + " -X " + encryptPass + " " + hostname + " "
+     
+        else:
+            fail("Invalid seclevel, valid levels are: noAuthNoPriv, authNoPriv, authPriv")
+            sys.exit()
+            
+    #corresponds to .iso.org.dod.internet.private.enterprises.juniperMIB.jnxMibs
+    junosRootHardwareMIB = ".1.3.6.1.4.1.2636.3"
+    
+    if mode == "volt":
+        fail("voltage table does not exist in Juniper's MIB.")
+        
+    if mode == "temp":
+        fail("Temp table does not exist in Juniper's MIB")
+        
+    if mode == "power":
+        #operating states:
+			#unknown(1),	WARNING
+			#running(2),	OK
+			#ready(3),		WARNING?
+			#reset(4),		CRITICAL
+			#runningAtFullSpeed(5),	CRITICAL
+			#down(6),		CRITICAL
+			#standby(7)	OK
+    #get count of PSU's
+        junosPSUCountOID = junosRootHardwareMIB + ".1.6.1.7.2"
+        junosPSUDescrOID = junosRootHardwareMIB + ".1.6.1.6.2"
+        junosPSUOperState = junosRootHardwareMIB + ".1.13.1.6.2"
+        #run snmpwalk command, strip newline off of results
+        #scalar value with the count of all PSU's on a given box
+        junosPSUCount = os.popen(command + junosPSUCountOID).read().replace('\n', '')
+        #scalar value describing the PSUs
+        junosPSUDescr = os.popen(command + junosPSUDescrOID).read().replace('\n', '')
+        #get rid of the double quotes if we need it for an append.
+        junosPSUDescr = junosPSUDescr.replace('\"', '')
+        #print junosPSUDescr
+        desc = os.popen(command + junosPSUDescrOID).read()[:-1].replace('\"', '').split('\n')
+        #table values with operating state. this builds an array with each state as an element
+        valu = os.popen(command + junosPSUOperState).read()[:-1].replace('\"', '').split('\n')
+        
+        #if verbose is specified
+        if verbose:
+            print_verbose(junosPSUDescrOID,desc,junosPSUOperState,valu)
+        
+        #check for missing desc/valu (not implemented)
+        if desc[0] == '' or valu[0] == '':
+            fail("description / value table empty or non-existent.")
+        
+        #if there's more values than descr's, let's fix that 
+        #this is going to happen a lot since desc is a scalar on the junipers
+        descLength = len(desc)
+        valuLength = len(valu)
+        if descLength < valuLength:
+            #get the number of descriptions we need to make it match
+            loopCount = valuLength - descLength
+            #loopCount = int(loopCount)
+            
+            #append a description onto the desc list so the lengths match
+            for x in range(0,loopCount):
+                desc.append(junosPSUDescr)        
+        
+        return(desc,valu)
+        
+    #should never hit this
+    sys.exit(errors['UNKNOWN'])
+    #fail("Juniper functions not yet implemented.")
 
 # Function to process data from SNMP tables
-def process_data(description, value, warning, critical, performance):
+def process_data(description, value, warning, critical, performance,type):
     string = ""
     status = "OK"
     perfstring = ""
@@ -320,13 +441,75 @@ def process_data(description, value, warning, critical, performance):
 
     # Used to provide output when no warning & critical values are provided
     else:
-         for d, v in zip(description,value):
-             if len(string) != 0:
-                  string += ", "
-             string += d + ": " + str(v)
+         if type == "cisco":
+             for d, v in zip(description,value):
+                 if len(string) != 0:
+                     string += ", "
+                 string += d + ": " + str(v)
              
              # Create performance data
-             perfstring += d.replace(' ', '_') + "=" + str(v) + " "
+                 perfstring += d.replace(' ', '_') + "=" + str(v) + " "
+             
+         elif type == "juniper":
+             print(type)
+             #list/tuple manipulation time
+             #This will let us be a bit more specific in what we display as a value
+             #combine description and value into list of tuples
+             newList = zip(description,value)
+             #convert to list of lists
+             newList = [list(elem) for elem in newList]
+             newListLength = len(newList)
+             #check status of item, insert result at beginning of item
+             #operating states there as reference
+             #operating states:
+				#unknown(1),	WARNING
+				#running(2),	OK
+				#ready(3),	OK
+				#reset(4),	CRITICAL
+				#runningAtFullSpeed(5),	CRITICAL
+				#down(6),		CRITICAL
+				#standby(7)	OK
+				#everything else	UNKNOWN
+             for item in newList:
+                 if item[1] == 1:
+                     item.insert(0,'WARNING')
+                 elif item[1] == 2:
+                     item.insert(0,'OK')
+                 elif item[1] == 3:
+                     item.insert(0,'OK')
+                 elif item[1] == 4:
+                     item.insert(0,'CRITICAL')
+                 elif item[1] == 5:
+                     item.insert(0,'CRITICAL')
+                 elif item[1] == 6:
+                     item.insert(0,'CRITICAL')
+                 elif item[1] == 7:
+                     item.insert(0,'OK')
+                 else:
+                     item.insert(0,'UNKNOWN')
+                     
+             #print(newList)
+             #output results without perfdata
+             if not performance: 
+                 #print status text for each item and exit
+                 for index, item in enumerate(newList, start=1):
+                     print(item[0] + ": " + item[1] + " " + str(index) + ": " + str(item[2]))
+                 
+                 sys.exit(errors[status])
+             
+             #print(': '.join(description))
+         elif type == "foundry":
+             print type
+         elif type == "hp":
+             print type
+         else:    
+             for d, v in zip(description,value):
+                 if len(string) != 0:
+                     string += ", "
+                 string += d + ": " + str(v)
+             
+             # Create performance data
+                 perfstring += d.replace(' ', '_') + "=" + str(v) + " "
 
     # If requested, include performance data
     if performance:
@@ -422,16 +605,16 @@ def main():
     # Check for valid "-T" option and execute appropriate check
     if type == "cisco": 
         (desc, value) = check_cisco(host,comm,mode,verb,vers,secl,aprot,apass,eprot,epass,user)
-        process_data(desc, map(int,value), warn, crit, perf)
+        process_data(desc, map(int,value), warn, crit, perf,type)
     if type == "foundry": 
         (desc, value) = check_foundry(host,comm,mode,verb,vers,secl,aprot,apass,eprot,epass,user)
-        process_data(desc, map(int,value), warn, crit, perf)
+        process_data(desc, map(int,value), warn, crit, perf,type)
     if type == "hp":
         (desc, value) = check_hp(host,comm,mode,verb,vers,secl,aprot,apass,eprot,epass,user)
-        process_data(desc, map(int,value), warn, crit, perf)
+        process_data(desc, map(int,value), warn, crit, perf,type)
     if type == "juniper":
-        (desc, value) = check_juniper(host,commu,mode,verb,vers,secl,aprot,apass,eprot,epass,user)
-        process_data(desc, map(int,value), warn, crit, perf)
+        (desc, value) = check_juniper(host,comm,mode,verb,vers,secl,aprot,apass,eprot,epass,user)
+        process_data(desc, map(int,value), warn, crit, perf,type)
     else:
         fail("-T only supports types of cisco, foundry, hp, or juniper") 
 
