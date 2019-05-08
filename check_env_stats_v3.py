@@ -355,6 +355,54 @@ def check_juniper(hostname,community,mode,verbose,version,secLevel,authProt,auth
     if mode == "temp":
         fail("Temp table does not exist in Juniper's MIB")
         
+    if mode == "fans":
+         #operating states:
+			#unknown(1),	WARNING
+			#running(2),	OK
+			#ready(3),		WARNING?
+			#reset(4),		CRITICAL
+			#runningAtFullSpeed(5),	CRITICAL
+			#down(6),		CRITICAL
+			#standby(7)	OK
+	   #build oids for count/descr/state
+        junosFanCountOID = junosRootHardwareMIB + ".1.6.1.7.4"
+        junosFanDescrOID = junosRootHardwareMIB + ".1.6.1.6.4"
+        junosFanOperState = junosRootHardwareMIB + ".1.13.1.6.4"
+        
+        #run snmpwalk command, strip newline off of results
+        #scalar value with the count of all fans on a given box
+        junosFanCount = os.popen(command + junosFanCountOID).read().replace('\n', '')
+        #scalar value describing fans
+        junosFanDescr = os.popen(command + junosFanDescrOID).read().replace('\n', '')
+        #ditch double quotes
+        junosFanDescr = junosFanDescr.replace('\"', '')
+        
+        desc = os.popen(command + junosFanDescrOID).read()[:-1].replace('\"', '').split('\n')
+        valu = os.popen(command + junosFanOperState).read()[:-1].replace('\"', '').split('\n')
+        
+        #if verbose is specified
+        if verbose:
+            print_verbose(junosPSUDescrOID,desc,junosPSUOperState,valu)
+        
+        #check for missing desc/valu (not implemented)
+        if desc[0] == '' or valu[0] == '':
+            fail("description / value table empty or non-existent.")
+            
+        #if there's more values than descr's, let's fix that 
+        #this is going to happen a lot since desc is a scalar on the junipers
+        descLength = len(desc)
+        valuLength = len(valu)
+        if descLength < valuLength:
+            #get the number of descriptions we need to make it match
+            loopCount = valuLength - descLength
+            #loopCount = int(loopCount)
+            
+            #append a description onto the desc list so the lengths match
+            for x in range(0,loopCount):
+                desc.append(junosFanDescr)
+        return(desc,valu)
+        
+        
     if mode == "power":
         #operating states:
 			#unknown(1),	WARNING
@@ -375,7 +423,7 @@ def check_juniper(hostname,community,mode,verbose,version,secLevel,authProt,auth
         junosPSUDescr = os.popen(command + junosPSUDescrOID).read().replace('\n', '')
         #get rid of the double quotes if we need it for an append.
         junosPSUDescr = junosPSUDescr.replace('\"', '')
-        #print junosPSUDescr
+        
         desc = os.popen(command + junosPSUDescrOID).read()[:-1].replace('\"', '').split('\n')
         #table values with operating state. this builds an array with each state as an element
         valu = os.popen(command + junosPSUOperState).read()[:-1].replace('\"', '').split('\n')
@@ -451,7 +499,7 @@ def process_data(description, value, warning, critical, performance,type):
                  perfstring += d.replace(' ', '_') + "=" + str(v) + " "
              
          elif type == "juniper":
-             print(type)
+             #print(type)
              #list/tuple manipulation time
              #This will let us be a bit more specific in what we display as a value
              #combine description and value into list of tuples
