@@ -8,3 +8,6 @@ currently, it only works for cisco stuff and it doesn't do anything with engine 
 8 May 19:
 
 now works with Juniper (LIMITED). Shows PSU and Fan status, not RPMs or temps or voltages. RPMs would be completely new. That will be a while, if ever. voltages, I can't really test with due to limitations on my gear (ex4550s, so I have no idea what temps actually look like). Temps, I'm working on. Such a pain in the tuchas. 
+
+14 Jun 19:
+Adding temps in. Got a list of temps and component ID strings. Next step is to use component ID string to get the list of names. the names will be the desc for temps and the temps will be the valu
