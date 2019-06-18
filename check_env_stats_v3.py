@@ -384,16 +384,27 @@ def check_juniper(hostname,community,mode,verbose,version,secLevel,authProt,auth
         junosTempListOID = junosRootHardwareMIB + ".1.13.1.7"
         #get a list of temp oids
         junosTempList = os.popen(command + junosTempListOID).read().split('\n')
+       
         #delete the last blank line
         junosTempList = junosTempList[:-1]
+        
         #create a temp list
         junosTempListFiltered = []
         #iterate through junosTempList
         for item in junosTempList:
         	  #if the item doesn't end in 0
-            if not item.endswith("0"):
+        	  #note this has to be an equals, not endswith, since both 40 and 0 "end" in zero
+        	  #but one is valid, the other is not.
+            #split at " = "
+            itemTest = item.split(" = ",1)[-1]
+            #test for zero. since itemTest is actually a string/char
+            #test it as an int
+            if int(itemTest) != 0:
                 #shove it on the end of the new list
                 junosTempListFiltered.append(item)
+        #check to see if there's no temps returned. If so, error our
+        if len(junosTempListFiltered) == 0:
+            fail("No components are returning temp data")
         #set the original list to the filtered list
         junosTempList = junosTempListFiltered
         
@@ -426,8 +437,64 @@ def check_juniper(hostname,community,mode,verbose,version,secLevel,authProt,auth
             #shove component ID in component ID list
             componentIDNum.append(itemComp)
         
-        print(componentIDNum)
-        print(componentTemp)
+        #now get the list of components. We delay this until now because if there's no valid temp readings, why do this at all?
+        #list init
+        junosComponentNameList = []
+        junosComponentNameTmpList = []
+        junosComponentNameListOID = junosRootHardwareMIB + ".1.13.1.5"
+        #return list, split at newlines so it's not all just one massive string
+        junosComponentNameTmpList = os.popen(command + junosComponentNameListOID).read().split('\n')
+        #delete the last blank line
+        junosComponentNameTmpList = junosComponentNameTmpList[:-1]
+        
+        #now, iterate through the component ID list. 
+        #use enumerate to search the entire component tmp list at once. if we find the item, then append that index to the real list
+        for item in componentIDNum:
+            #this returns an index value NOT AN INT. If theItem from componentIDNum is in
+            #junosComponentNameTmpList, then we get [int], else we get []
+            theIndex = [i for i, compListItem in enumerate(junosComponentNameTmpList) if item in compListItem]
+            #we don't want to append empty list items
+            if theIndex != []:
+                #grab the actual int value from the index. since theIndex will always only have
+                #one value, we just grab the first one, aka item 0. Yes, I get there's a
+                #Potential danger here of multiple matches, but for the snmp use case, 
+                #that's not going to happen
+                appendIndex = theIndex[0]
+                #append junosComponentNameList with the appropriate item in junosComponentNameTmpList 
+                #that matches the item in componentIDNum
+                junosComponentNameList.append(junosComponentNameTmpList[appendIndex])
+        
+        #now we split the list so that we only have the component names, not the whole oid description
+        #this will become the desc. Yes, ugly, but it works.
+        
+        #clear out junosComponentNameTmpList
+        junosComponentNameTmpList = []
+        
+        for itemIndex,item in enumerate(junosComponentNameList):
+        	junosComponentNameList[itemIndex] = item.split(" = ",1)[-1]
+        
+        #assign values to desc and valu for return
+        desc = junosComponentNameList
+        valu = componentTemp
+        
+        #account for verbose
+        if verbose:
+        	print(junosComponentNameListOID,desc,junosTempListOID,valu)
+        	
+        return(desc,valu)
+        
+        #for item in junosComponentNameList:
+        #	itemTemp = item.split(" = ",1)[-1]
+        
+        
+        
+        #print("Component Temps")
+        #for item in componentTemp:
+        #    print(item)
+        
+        #print("Filtered component names")
+        #for item in junosComponentNameList:
+        #    print(item)
         
     if mode == "fans":
          #operating states:
@@ -530,125 +597,200 @@ def check_juniper(hostname,community,mode,verbose,version,secLevel,authProt,auth
     #fail("Juniper functions not yet implemented.")
 
 # Function to process data from SNMP tables
-def process_data(description, value, warning, critical, performance,type):
-    string = ""
-    status = "OK"
-    perfstring = ""
+def process_data(description, value, warning, critical, performance,type,mode):
+	string = ""
+	status = "OK"
+	perfstring = ""
 
-    if critical and warning:
-        if len(critical) != len(description):
-            fail("number of critical values not equal to number of table values.")
-        elif len(warning) != len(description):
-            fail("number of warning values not equal to number of table values.")
-        else:
-	
-            # Check for integer or string values
+	if critical and warning:
+		if (type == "juniper") and (mode == "temp"):
+			#warning and critical are lists, so...
+			if int(critical[0]) <= int(warning[0]):
+				fail("Warning value must be less than critical value")
+			#list/tuple manipulation time
+			#This will let us be a bit more specific in what we display as a value
+			#combine description and value into list of tuples
+			newList = zip(description,value)
+			#convert to list of lists
+			newList = [list(elem) for elem in newList]
+			newListLength = len(newList)
+			for item in newList:
+				#check for critical first
+				if int(item[-1]) >= int(critical[0]):
+					#insert "CRITICAL" into item
+					item.insert(0,'CRITICAL')
+				#check for warning    
+				elif int(item[-1]) >= int(warning[0]) and item[-1] < int(critical[0]):
+					#insert warning
+					item.insert(0,'WARNING')
+				#it's all good    
+				else:
+					#insert OK
+					item.insert(0,'OK')
+                
+			#output if there's no performance data
+			if not performance:
+			#print status text for each item and exit
+				for index, item in enumerate(newList, start=1):
+					print(item[0] + ": " + item[1] + " " + str(index) + ": " + str(item[2]))
+			#we want perfdata
+			else:
+				#really the same as not, with a couple more steps
+				for index,item in enumerate(newList, start=1):
+					#get the normal output data
+					regData = item[0] + ": " + item[1] + " " + str(index) + ": " + str(item[2])
+					#build the perfdata string, no spaces in the name
+					perfString = item[1].replace(' ','_') + "=" + str(item[2])
+					#output both with a space bar space separator
+					print(regData + " | " + perfString)
+			
+			#exit the script
+			sys.exit(errors[status])
+		#not temp AND juniper
+		else:
+			if len(critical) != len(description):
+				fail("number of critical values not equal to number of table values.")
+			elif len(warning) != len(description):
+				fail("number of warning values not equal to number of table values.")
+			else:
 
-            # Check each table value against provided warning & critical values
-            for d, v, w, c in zip(description,value,warning,critical):
-                if len(string) != 0:
-                    string += ", "
-                if v >= c:
-                    status = "CRITICAL"
-                    string += d + ": " + str(v) + " (C=" + str(c) + ")"
-                elif v >= w:
-                    if status != "CRITICAL":
-                        status = "WARNING"
-                    string += d + ": " + str(v) + " (W=" + str(w) + ")"
-                else:
-                    string += d + ": " + str(v)
+				# Check for integer or string values
 
-                # Create performance data
-                perfstring += d.replace(' ', '_') + "=" + str(v) + " "
+				# Check each table value against provided warning & critical values
+				for d, v, w, c in zip(description,value,warning,critical):
+					if len(string) != 0:
+						string += ", "
+					if v >= c:
+						status = "CRITICAL"
+						string += d + ": " + str(v) + " (C=" + str(c) + ")"
+					elif v >= w:
+						if status != "CRITICAL":
+							status = "WARNING"
+						string += d + ": " + str(v) + " (W=" + str(w) + ")"
+					else:
+						string += d + ": " + str(v)
 
-    # Used to provide output when no warning & critical values are provided
-    else:
-         if type == "cisco":
-             for d, v in zip(description,value):
-                 if len(string) != 0:
-                     string += ", "
-                 string += d + ": " + str(v)
+				# Create performance data
+					perfstring += d.replace(' ', '_') + "=" + str(v) + " "
+
+	# Used to provide output when no warning & critical values are provided
+	else:
+		if type == "cisco":
+			for d, v in zip(description,value):
+				if len(string) != 0:
+					string += ", "
+				string += d + ": " + str(v)
+
+			# Create performance data
+			perfstring += d.replace(' ', '_') + "=" + str(v) + " "
              
-             # Create performance data
-                 perfstring += d.replace(' ', '_') + "=" + str(v) + " "
-             
-         elif type == "juniper":
-             #print(type)
-             #list/tuple manipulation time
-             #This will let us be a bit more specific in what we display as a value
-             #combine description and value into list of tuples
-             newList = zip(description,value)
-             #convert to list of lists
-             newList = [list(elem) for elem in newList]
-             newListLength = len(newList)
-             #check status of item, insert result at beginning of item
-             #operating states there as reference
-             #operating states:
-				#unknown(1),	WARNING
-				#running(2),	OK
-				#ready(3),	OK
-				#reset(4),	CRITICAL
-				#runningAtFullSpeed(5),	CRITICAL
-				#down(6),		CRITICAL
-				#standby(7)	OK
-				#everything else	UNKNOWN
-             for item in newList:
-                 if item[1] == 1:
-                     item.insert(0,'WARNING')
-                 elif item[1] == 2:
-                     item.insert(0,'OK')
-                 elif item[1] == 3:
-                     item.insert(0,'OK')
-                 elif item[1] == 4:
-                     item.insert(0,'CRITICAL')
-                 elif item[1] == 5:
-                     item.insert(0,'CRITICAL')
-                 elif item[1] == 6:
-                     item.insert(0,'CRITICAL')
-                 elif item[1] == 7:
-                     item.insert(0,'OK')
-                 else:
-                     item.insert(0,'UNKNOWN')
-                     
-             #print(newList)
-             #output results without perfdata
-             if not performance: 
-                 #print status text for each item and exit
-                 for index, item in enumerate(newList, start=1):
-                     print(item[0] + ": " + item[1] + " " + str(index) + ": " + str(item[2]))
-                 
-                 sys.exit(errors[status])
-             
-             #print(': '.join(description))
-         elif type == "foundry":
-             print type
-         elif type == "hp":
-             print type
-         else:    
-             for d, v in zip(description,value):
-                 if len(string) != 0:
-                     string += ", "
-                 string += d + ": " + str(v)
-             
-             # Create performance data
-                 perfstring += d.replace(' ', '_') + "=" + str(v) + " "
+		elif type == "juniper":
+			#non-temp code
+			if mode != "temp":
+				#list/tuple manipulation time
+				#This will let us be a bit more specific in what we display as a value
+				#combine description and value into list of tuples
+				newList = zip(description,value)
+				#convert to list of lists
+				newList = [list(elem) for elem in newList]
+				newListLength = len(newList)
+				#check status of item, insert result at beginning of item
+				#operating states there as reference
+				#operating states:
+					#unknown(1),	WARNING
+					#running(2),	OK
+					#ready(3),	OK
+					#reset(4),	CRITICAL
+					#runningAtFullSpeed(5),	CRITICAL
+					#down(6),		CRITICAL
+					#standby(7)	OK
+					#everything else	UNKNOWN
+				for item in newList:
+					if item[1] == 1:
+						item.insert(0,'WARNING')
+					elif item[1] == 2:
+						item.insert(0,'OK')
+					elif item[1] == 3:
+						item.insert(0,'OK')
+					elif item[1] == 4:
+						item.insert(0,'CRITICAL')
+					elif item[1] == 5:
+						item.insert(0,'CRITICAL')
+					elif item[1] == 6:
+						item.insert(0,'CRITICAL')
+					elif item[1] == 7:
+						item.insert(0,'OK')
+					else:
+						item.insert(0,'UNKNOWN')
+				 
+				#output results without perfdata
+				if not performance: 
+					#print status text for each item and exit
+					for index, item in enumerate(newList, start=1):
+						print(item[0] + ": " + item[1] + " " + str(index) + ": " + str(item[2]))
+			  
+					sys.exit(errors[status])
+			else:
+				#list/tuple manipulation time
+				#This will let us be a bit more specific in what we display as a value
+				#combine description and value into list of tuples
+				newList = zip(description,value)
+				#convert to list of lists
+				newList = [list(elem) for elem in newList]
+				newListLength = len(newList)
+				for item in newList:
+					item.insert(0,'OK')
+					print(item)
+#			 
+#				#output if there's no performance data
+				if not performance:
+				#print status text for each item and exit
+					for index, item in enumerate(newList, start=1):
+						print(item[0] + ": " + item[1] + " " + str(index) + ": " + str(item[2]))
+				#there is perfdata requested
+				else:
+					#really the same as not, with a couple more steps
+					for index,item in enumerate(newList, start=1):
+						#get the normal output data
+						regData = item[0] + ": " + item[1] + " " + str(index) + ": " + str(item[2])
+						#build the perfdata string, no spaces in the name
+						perfString = item[1].replace(' ','_') + "=" + str(item[2])
+						#output both with a space bar space separator
+						print(regData + " | " + perfString)
 
-    # If requested, include performance data
-    if performance:
-        string += " | " + perfstring
+				#exit the script
+				sys.exit(errors[status])
+             
+				#print(': '.join(description))
+		elif type == "foundry":
+			print type
+		elif type == "hp":
+			print type
+		else:    
+			for d, v in zip(description,value):
+				if len(string) != 0:
+					string += ", "
+				string += d + ": " + str(v)
 
-    # Print status text and return correct value.
-    print status + ": " + string
-    sys.exit(errors[status])
+				# Create performance data
+				perfstring += d.replace(' ', '_') + "=" + str(v) + " "
+
+	# If requested, include performance data
+	if performance:
+		string += " | " + perfstring
+
+	# Print status text and return correct value.
+	print status + ": " + string
+	sys.exit(errors[status])
 
 def print_verbose(oid_A,val_A,oid_B,val_B):
-    print "Description Table:\n\t" + str(oid_A) + " = \n\t" + str(val_A)
-    print "Value Table:\n\t" + str(oid_B) + " = \n\t" + str(val_B)
-    sys.exit(errors['UNKNOWN'])
+	print "Description Table:\n\t" + str(oid_A) + " = \n\t" + str(val_A)
+	print "Value Table:\n\t" + str(oid_B) + " = \n\t" + str(val_B)
+	sys.exit(errors['UNKNOWN'])
 
 def fail(message):
-    print "Error: " + message	
-    sys.exit(errors['UNKNOWN'])
+	print "Error: " + message	
+	sys.exit(errors['UNKNOWN'])
 
 def main():
     args = None
@@ -659,9 +801,9 @@ def main():
     parser.add_option("-H", action="store", type="string", dest="hostname", help="hostname or IP of device")
     parser.add_option("-C", action="store", type="string", dest="community", help="community read-only string [default=%default]", default="public")
     parser.add_option("-T", action="store", type="string", dest="type", help="hardware type (cisco,foundry,hp,juniper)")
-    parser.add_option("-M", action="store", type="string", dest="mode", help="type of statistics to gather (temp,fans,power,volt)")
-    parser.add_option("-w", action="store", type="string", dest="warn", help="comma-seperated list of values at which to set warning")
-    parser.add_option("-c", action="store", type="string", dest="crit", help="comma-seperated list of values at which to set critical")
+    parser.add_option("-M", action="store", type="string", dest="mode", help="type of statistics to gather (temp,fans,power,volt) TEMPS IN CELSIUS")
+    parser.add_option("-w", action="store", type="string", dest="warn", help="comma-seperated list of values at which to set warning. For Juniper temps, use a single integer")
+    parser.add_option("-c", action="store", type="string", dest="crit", help="comma-seperated list of values at which to set critical. For Juniper temps, use a single integer")
     parser.add_option("-p", action="store_true", dest="perf", help="include perfmon output")
     parser.add_option("-v", action="store_true", dest="verb", help="enable verbose output")
     #snmpv3 options
@@ -725,18 +867,19 @@ def main():
 
 
     # Check for valid "-T" option and execute appropriate check
+    #added mode check, because for juniper, type is handled differently
     if type == "cisco": 
         (desc, value) = check_cisco(host,comm,mode,verb,vers,secl,aprot,apass,eprot,epass,user)
-        process_data(desc, map(int,value), warn, crit, perf,type)
+        process_data(desc, map(int,value), warn, crit, perf,type,mode)
     if type == "foundry": 
         (desc, value) = check_foundry(host,comm,mode,verb,vers,secl,aprot,apass,eprot,epass,user)
-        process_data(desc, map(int,value), warn, crit, perf,type)
+        process_data(desc, map(int,value), warn, crit, perf,type,mode)
     if type == "hp":
         (desc, value) = check_hp(host,comm,mode,verb,vers,secl,aprot,apass,eprot,epass,user)
-        process_data(desc, map(int,value), warn, crit, perf,type)
+        process_data(desc, map(int,value), warn, crit, perf,type,mode)
     if type == "juniper":
         (desc, value) = check_juniper(host,comm,mode,verb,vers,secl,aprot,apass,eprot,epass,user)
-        process_data(desc, map(int,value), warn, crit, perf,type)
+        process_data(desc, map(int,value), warn, crit, perf,type,mode)
     else:
         fail("-T only supports types of cisco, foundry, hp, or juniper") 
 
