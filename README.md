@@ -11,3 +11,6 @@ now works with Juniper (LIMITED). Shows PSU and Fan status, not RPMs or temps or
 
 14 Jun 19:
 Adding Juniper temps in. I found I actually have access to some MX's so I can build out the temps. Got a list of temps and component ID strings. Next step is to use component ID string to get the list of names. the names will be the desc for temps and the temps will be the valu
+
+19 June 19:
+Juniper temps are as done as I can get them. Added in perfdata for temps, redid crit/warning checks to take temps into account. Note, that there's only a single warning/crit value for temps, because depending on what you're targeting, there may be differing amounts of temp data. It's a mess, TBH. also added in perfdata for fans and power, not because it's that useful, but may as well. 
